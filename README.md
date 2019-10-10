@@ -16,24 +16,36 @@ Requires [Chart.js](https://github.com/chartjs/Chart.js/releases) **2.7.0** or l
 
 ### Example:
 ```js
+var getColor = (value) => `hsl(${(value / 10000) * 120},100%,50%)`;
 var ctx = document.getElementById("canvas").getContext("2d");
 new Chart(ctx, {
 	type: "tsgauge",
 	data: {
 		datasets: [{
-			backgroundColor: ["#0fdc63", "#fd9704", "#ff7143"],
+			backgroundColor: [0, 5000, 10000].map(getColor),
 			borderWidth: 0,
 			gaugeData: {
 				value: 7777,
-				valueColor: "#ff7143"
+				valueColor: getColor,
 			},
-			gaugeLimits: [0, 3000, 7000, 10000]
-		}]
+			gaugeLimits: [0, 3000, 7000, 10000],
+		}],
 	},
 	options: {
-            events: [],
-            showMarkers: true
-	}
+		events: [],
+		showMarkers: true,
+		labelFormatFn: (number) => new Intl.NumberFormat('en-IN', {
+			style: 'currency',
+			currency: 'EUR',
+			maximumFractionDigits: 0,
+			minimumFractionDigits: 0,
+		}).format(number),
+		markerFormatFn: (number) => new Intl.NumberFormat('en-IN', {
+			maximumFractionDigits: 0,
+			minimumFractionDigits: 0,
+		}).format(number),
+		arrowColor: getColor,
+	},
 });
 ```
 ## License

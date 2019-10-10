@@ -2,6 +2,7 @@
 	if (!window.Chart) {
 		return;
 	}
+	const animate = window.requestAnimationFrame || setTimeout;
 	function GaugeChartHelper() {
 	}
 	GaugeChartHelper.prototype.setup = function(chart, config) {
@@ -15,15 +16,11 @@
 		this.fontColor = options.defaultFontColor;
 		this.ctx.textBaseline = "alphabetic";
 		this.arrowAngle = 25 * Math.PI / 180;
-		this.arrowColor = config.options.indicatorColor || options.arrowColor;
+		this.labelFormatFn = config.options.labelFormatFn instanceof Function ? config.options.labelFormatFn : function (value) { return Math.round(value); };
+		this.markerFormatFn = config.options.markerFormatFn instanceof Function ? config.options.markerFormatFn : function (value) { return value; };
+    	var arrowColor = config.options.indicatorColor || options.arrowColor;
+		this.arrowColor = arrowColor instanceof Function ? arrowColor : function () { return arrowColor };
 		this.showMarkers = typeof(config.options.showMarkers) === 'undefined' ? true : config.options.showMarkers;
-		if (config.options.markerFormatFn) {
-			this.markerFormatFn = config.options.markerFormatFn;
-		} else {
-			this.markerFormatFn = function(value) {
-				return value;
-			}
-		}
 	};
 	GaugeChartHelper.prototype.applyGaugeConfig = function(chartConfig) {
 		this.calcLimits();
@@ -57,6 +54,9 @@
 		this.isRevers = minValue > maxValue;
 		this.minValue = this.isRevers ? maxValue : minValue;
 		this.totalValue = total;
+		if (this.lastValue === undefined) {
+			this.lastValue = this.minValue;
+		}
 	};
 	GaugeChartHelper.prototype.updateGaugeDimensions = function() {
 		var chartArea = this.chart.chartArea;
@@ -111,8 +111,22 @@
 			this.renderLimitLabel(this.limits[i]);
 		}
 	};
-	GaugeChartHelper.prototype.renderValueLabel = function() {
-		var label = this.data.value.toString();
+	GaugeChartHelper.prototype.clearValueLabel = function(label) {
+		this.ctx.globalCompositeOperation = "destination-out";
+		this.ctx.lineWidth = 3;
+		this.renderLabel(label);
+		this.ctx.strokeText(label, this.gaugeCenterX, this.gaugeCenterY);
+	};
+	GaugeChartHelper.prototype.renderValueLabel = function(force) {
+		var label = this.labelFormatFn(this.lastValue);
+		if (!force && this.lastLabel === label) return;
+		let lastLabel = this.lastLabel;
+		this.lastLabel = label;
+		if (lastLabel) this.clearValueLabel(lastLabel);
+		this.ctx.globalCompositeOperation = "source-over";
+		this.renderLabel(label);
+	};
+	GaugeChartHelper.prototype.renderLabel = function(label) {
 		var ctx = this.ctx;
 		ctx.font = "30px " + this.fontStyle;
 		var stringWidth = ctx.measureText(label).width;
@@ -122,22 +136,32 @@
 		var fontSizeToUse = Math.min(newFontSize, this.gaugeRadius);
 		ctx.textAlign = "center";
 		ctx.font = fontSizeToUse + "px " + this.fontStyle;
-		ctx.fillStyle = this.data.valueColor || this.fontColor;
+    	var fontColor = this.data.valueColor || this.fontColor;
+		ctx.fillStyle = fontColor instanceof Function ? fontColor(this.lastValue) : fontColor;
 		ctx.fillText(label, this.gaugeCenterX, this.gaugeCenterY);
 	};
 	GaugeChartHelper.prototype.renderValueArrow = function(value) {
-		var angle = this.getAngleOfValue(typeof value === "number" ? value : this.data.value);
+    	var val = typeof value === "number" ? value : this.lastValue;
+		if (val === undefined) return;
+		if (this.lastArrowValue !== undefined) this.clearValueArrow(this.lastArrowValue);
+		this.lastArrowValue = val;
+		var angle = this.getAngleOfValue(val);
 		this.ctx.globalCompositeOperation = "source-over";
-		this.renderArrow(this.gaugeRadius, angle, this.arrowLength, this.arrowAngle, this.arrowColor);
+		var color = this.arrowColor(val);
+		this.renderArrow(this.gaugeRadius, angle, this.arrowLength, this.arrowAngle, color);
 	};
 	GaugeChartHelper.prototype.renderSmallValueArrow = function(value) {
+		if (value === undefined) return;
+		if (this.lastArrowValue !== undefined) this.clearValueArrow(this.lastArrowValue);
+		this.lastArrowValue = value;
 		var angle = this.getAngleOfValue(value);
 		this.ctx.globalCompositeOperation = "source-over";
-		this.renderArrow(this.gaugeRadius - 1, angle, this.arrowLength - 1, this.arrowAngle, this.arrowColor);
+		var color = this.arrowColor(value);
+		this.renderArrow(this.gaugeRadius - 1, angle, this.arrowLength - 1, this.arrowAngle, color);
 	};
 	GaugeChartHelper.prototype.clearValueArrow = function(value) {
 		var angle = this.getAngleOfValue(value);
-		this.ctx.lineWidth = 2;
+		this.ctx.lineWidth = 1;
 		this.ctx.globalCompositeOperation = "destination-out";
 		this.renderArrow(this.gaugeRadius - 1, angle, this.arrowLength + 1, this.arrowAngle, "#FFFFFF");
 		this.ctx.stroke();
@@ -160,23 +184,31 @@
 		ctx.fill();
 	};
 	GaugeChartHelper.prototype.animateArrow = function() {
-		var stepCount = 30;
-		var animateTimeout = 300;
-		var gaugeValue = this.data.value - this.minValue;
-		var step = gaugeValue / stepCount;
-		var i = 0;
-		var currentValue = this.minValue;
-		var interval = setInterval(function() {
-			i++;
-			this.clearValueArrow(currentValue);
-			if (i > stepCount) {
-				clearInterval(interval);
-				this.renderValueArrow();
+		var animationTime = 900;
+		this.animationStartTime = Date.now();
+		this.animationLength = this.data.value - this.lastValue;
+		this.animationStartValue = this.lastValue;
+		if (this.isAnimating) return;
+		this.isAnimating = true;
+		var onFrame = function () {
+			var progress = Date.now() - this.animationStartTime;
+			var progressPercentage = progress / 900;
+			const currentValue = this.animationStartValue + (this.animationLength * progressPercentage);
+
+			if (progress >= animationTime) {
+				this.isAnimating = false;
+				this.lastValue = this.data.value;
+				this.renderValueArrow(this.lastValue);
+				this.renderValueLabel();
 			} else {
-				currentValue += step;
-				this.renderSmallValueArrow(currentValue);
+				this.lastValue = currentValue;
+				this.renderSmallValueArrow(this.lastValue);
+				this.renderValueLabel();
+				animate(onFrame, 16);
 			}
-		}.bind(this), animateTimeout / stepCount);
+			
+		}.bind(this);
+		animate(onFrame, 16);
 	};
 	Chart.defaults.tsgauge = {
 		animation: {
@@ -199,7 +231,6 @@
 			gaugeHelper.applyGaugeConfig(chart.config);
 			chart.config.options.animation.onComplete = function(chartElement) {
 				gaugeHelper.updateGaugeDimensions();
-				gaugeHelper.animateArrow();
 			};
 			Chart.controllers.doughnut.prototype.initialize.apply(this, arguments);
 		},
@@ -207,11 +238,16 @@
 			Chart.controllers.doughnut.prototype.draw.apply(this, arguments);
 			var gaugeHelper = this.gaugeHelper;
 			gaugeHelper.updateGaugeDimensions();
-			gaugeHelper.renderValueLabel();
+			gaugeHelper.renderValueLabel(true);
 			if (gaugeHelper.showMarkers) {
 				gaugeHelper.renderLimits();
 			}
-			gaugeHelper.renderSmallValueArrow(gaugeHelper.minValue);
+			gaugeHelper.renderSmallValueArrow(gaugeHelper.lastValue);
+		},
+		update: function() {
+			Chart.controllers.doughnut.prototype.update.apply(this, arguments);
+			var gaugeHelper = this.gaugeHelper;
+			gaugeHelper.animateArrow();
 		}
 	});
 })();
